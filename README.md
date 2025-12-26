@@ -1,6 +1,6 @@
 # Delphi-PTY Backend
 
-A high-performance Windows ConPTY backend implemented in Delphi, exposed to Node.js through a native N-API addon (C++).
+A high-performance Windows ConPTY backend implemented in Delphi, exposed to Node.js through a native N-API addon (C++).  
 This project provides a stable, future-proof alternative to `ffi-napi`, fully compatible with Node.js 22+.
 
 It allows Node.js applications to spawn and control Windows pseudo-terminals (ConPTY) with:
@@ -40,6 +40,13 @@ demo.js                <- Example usage
 package.json
 PtyCore.pas            <- Delphi implementation
 DelphiPty.dpr/.dproj   <- Delphi project files
+
+Batch files:
+BuildAddOn.bat
+CleanAddOn.bat
+InstallAddOn.bat
+BuildDLL.bat
+RunDemo.bat
 ```
 
 ---
@@ -53,7 +60,7 @@ DelphiPty.dpr/.dproj   <- Delphi project files
 - Delphi 10.3+ (or any version with WinAPI + ConPTY support)
 
 ### Node.js
-- Node.js 18 or higher
+- Node.js 18 or higher  
 - Fully compatible with Node 22+
 
 ### Build Tools
@@ -88,10 +95,109 @@ This is the compiled native addon that Node.js loads.
 
 ---
 
-## Full Clean Reinstall (if npm install fails)
+## Building the Delphi DLL (DelphiPty.dll)
 
-Sometimes `npm install` may fail to install dependencies correctly, especially when native modules are involved.
-This can happen even if `node_modules` was deleted, because npm also uses `package-lock.json` to decide what is already installed.
+The backend DLL must be compiled before Node.js can load it.
+
+### Option 1 — Build using Delphi IDE
+
+1. Open `DelphiPty.dproj` in Delphi.
+2. Select **Build ? Build All**.
+3. The output file will be generated as:
+
+```
+DelphiPty.dll
+```
+
+Place the DLL next to `demo.js` or in a directory that the addon can load via `LoadLibraryA`.
+
+---
+
+### Option 2 — Build using the batch file
+
+This repository includes:
+
+```
+BuildDLL.bat
+```
+
+Running it will:
+
+- Invoke the Delphi command-line compiler  
+- Build `DelphiPty.dll`  
+- Place it in the correct output directory  
+
+Usage:
+
+```
+BuildDLL.bat
+```
+
+---
+
+## Utility Batch Files
+
+| File                 | Purpose                                               |
+|----------------------|-------------------------------------------------------|
+| **BuildAddOn.bat**   | Builds the Node.js N-API addon (`delphi_pty.node`)    |
+| **CleanAddOn.bat**   | Removes `build/` and other generated addon files      |
+| **InstallAddOn.bat** | Runs `npm install` and prepares the addon environment |
+| **BuildDLL.bat**     | Compiles the Delphi backend DLL (`DelphiPty.dll`)     |
+| **RunDemo.bat**      | Runs the demo (`node demo.js`)                        |
+
+These scripts are optional but help maintain a clean, repeatable workflow.
+
+---
+
+## Using the Native Addon (.node file)
+
+When you build the addon, node-gyp produces:
+
+```
+build/Release/delphi_pty.node
+```
+
+This is the compiled N-API module that Node.js loads at runtime.
+
+### Where to place the .node file
+
+#### Option 1 — Keep it in build/Release/
+If your `index.js` loads it like:
+
+```js
+const addon = require('./build/Release/delphi_pty.node');
+```
+
+…then nothing else is needed.
+
+#### Option 2 — Copy it next to index.js
+If you prefer a flatter structure, copy it manually or run:
+
+```
+InstallAddOn.bat
+```
+
+Then load it like:
+
+```js
+const addon = require('./delphi_pty.node');
+```
+
+### Requirements for successful loading
+
+1. `delphi_pty.node` must be in the correct location  
+2. `DelphiPty.dll` must be in the same directory or in the system PATH  
+3. Node.js architecture must match the DLL (x64 recommended)
+
+If anything is missing, Node will throw:
+
+```
+Error: The specified module could not be found.
+```
+
+---
+
+## Full Clean Reinstall (if npm install fails)
 
 If you see errors like:
 
@@ -110,22 +216,11 @@ npx node-gyp rebuild
 
 ### Optional: Clear the global node-gyp cache
 
-If you suspect corrupted Node headers or stale build metadata, you can also remove the global node-gyp cache:
-
 ```
 rmdir /s /q C:\Users\<YOUR_USERNAME>\AppData\Local\node-gyp
 ```
 
-Replace `<YOUR_USERNAME>` with your actual Windows user folder name.
-
-Why this may help:
-
-- node-gyp caches downloaded Node headers
-- old cached versions may contain incorrect include paths
-- clearing the cache forces node-gyp to download fresh headers
-- this resolves many mysterious build errors on Windows
-
-Removing both the local folders **and** the global node-gyp cache ensures a completely clean, correct reinstall.
+This forces node-gyp to download fresh headers.
 
 ---
 
@@ -135,12 +230,18 @@ Removing both the local folders **and** the global node-gyp cache ensures a comp
 node demo.js
 ```
 
+Or simply:
+
+```
+RunDemo.bat
+```
+
 You should see:
 
-- ConPTY output from cmd.exe
-- Directory listings
-- Exit codes
-- Real-time streaming
+- ConPTY output from cmd.exe  
+- Directory listings  
+- Exit codes  
+- Real-time streaming  
 
 ---
 
@@ -167,16 +268,16 @@ pty.write("dir\r\n");
 ## How It Works
 
 ### Delphi Side
-- Implements ConPTY using Windows API
-- Manages pipes, process creation, callbacks
-- Exports a clean C interface via stdcall
+- Implements ConPTY using Windows API  
+- Manages pipes, process creation, callbacks  
+- Exports a clean C interface via stdcall  
 
 ### Node Side
-- Loads the DLL using LoadLibraryA
-- Resolves function pointers
-- Wraps everything in N-API functions
-- Uses ThreadSafeFunction for async callbacks
-- Exposes a simple JS API
+- Loads the DLL using LoadLibraryA  
+- Resolves function pointers  
+- Wraps everything in N-API functions  
+- Uses ThreadSafeFunction for async callbacks  
+- Exposes a simple JS API  
 
 This architecture is future-proof because N-API guarantees ABI stability across Node versions.
 
@@ -186,11 +287,11 @@ This architecture is future-proof because N-API guarantees ABI stability across 
 
 Because:
 
-- ffi-napi depends on libffi
-- libffi breaks on Node 22+
-- ffi-napi is no longer actively maintained
-- Node 22 introduced a new ABI
-- N-API addons remain stable forever
+- ffi-napi depends on libffi  
+- libffi breaks on Node 22+  
+- ffi-napi is no longer actively maintained  
+- Node 22 introduced a new ABI  
+- N-API addons remain stable forever  
 
 This project removes all those issues.
 
@@ -198,9 +299,9 @@ This project removes all those issues.
 
 ## Roadmap
 
-- Add PowerShell support
-- Add UTF-16 passthrough mode
-- Add binary mode for raw terminal streams
-- Publish as an npm package
+- Add PowerShell support  
+- Add UTF-16 passthrough mode  
+- Add binary mode for raw terminal streams  
+- Publish as an npm package  
 
 ---
