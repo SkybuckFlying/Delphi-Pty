@@ -15,3 +15,9 @@ setTimeout(() => {
 setTimeout(() => {
   pty.write('exit\r\n');
 }, 2000);
+
+// Auto-kill after 3 seconds to verify clean exit
+setTimeout(() => {
+  console.log("Killing PTY...");
+  pty.kill();
+}, 3000);

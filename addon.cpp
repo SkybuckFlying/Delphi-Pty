@@ -137,16 +137,24 @@ void __stdcall ExitCallback(PTY_HANDLE handle, int exitCode) {
   auto it = g_callbacks.find(handle);
   if (it == g_callbacks.end()) return;
 
-  auto tsfn = it->second.onExit;
-  if (!tsfn) return;
+  auto tsfnExit = it->second.onExit;
+  
+  if (tsfnExit) {
+    tsfnExit.BlockingCall(
+      new int(exitCode),
+      [](Napi::Env env, Function jsCallback, int* code) {
+        jsCallback.Call({ Number::New(env, *code) });
+        delete code;
+      }
+    );
+  }
 
-  tsfn.BlockingCall(
-    new int(exitCode),
-    [](Napi::Env env, Function jsCallback, int* code) {
-      jsCallback.Call({ Number::New(env, *code) });
-      delete code;
-    }
-  );
+  // CRITICAL FIX: Release all TSFNs to allow Node to exit
+  if (it->second.onData) it->second.onData.Release();
+  if (it->second.onExit) it->second.onExit.Release();
+  if (it->second.onError) it->second.onError.Release();
+  
+  g_callbacks.erase(it);
 }
 
 void __stdcall ErrorCallback(PTY_HANDLE handle, int errCode, const char* msg) {

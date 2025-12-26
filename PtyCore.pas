@@ -244,17 +244,17 @@ end;
 
 destructor TPtySession.Destroy;
 begin
+  if FConPty <> 0 then ClosePseudoConsole(FConPty);
+  if FOutPipeRead <> 0 then CloseHandle(FOutPipeRead);
+  if FInPipeWrite <> 0 then CloseHandle(FInPipeWrite);
+  if FProcHandle <> 0 then CloseHandle(FProcHandle);
+
   if FReadThread <> nil then
   begin
     FReadThread.Terminate;
     WaitForSingleObject(FReadThread.Handle, 2000);
     FReadThread.Free;
   end;
-
-  if FOutPipeRead <> 0 then CloseHandle(FOutPipeRead);
-  if FInPipeWrite <> 0 then CloseHandle(FInPipeWrite);
-  if FProcHandle <> 0 then CloseHandle(FProcHandle);
-  if FConPty <> 0 then ClosePseudoConsole(FConPty);
 
   DeleteCriticalSection(FCrit);
   inherited;
@@ -281,6 +281,19 @@ begin
   end;
 end;
 
+function MyCreateProcessW(
+  lpApplicationName: PWideChar;
+  lpCommandLine: PWideChar;
+  lpProcessAttributes: Pointer;
+  lpThreadAttributes: Pointer;
+  bInheritHandles: BOOL;
+  dwCreationFlags: DWORD;
+  lpEnvironment: Pointer;
+  lpCurrentDirectory: PWideChar;
+  lpStartupInfo: Pointer;
+  var lpProcessInformation: PROCESS_INFORMATION
+): BOOL; stdcall; external kernel32 name 'CreateProcessW';
+
 function TPtySession.Start(
   const CmdLine: UnicodeString;
   const Cwd: UnicodeString;
@@ -288,11 +301,39 @@ function TPtySession.Start(
   Cols: Integer;
   Rows: Integer
 ): Integer;
+type
+  {$A8}
+  TStartupInfoW_Explicit = record
+    cb: DWORD;
+    lpReserved: PWideChar;
+    lpDesktop: PWideChar;
+    lpTitle: PWideChar;
+    dwX: DWORD;
+    dwY: DWORD;
+    dwXSize: DWORD;
+    dwYSize: DWORD;
+    dwXCountChars: DWORD;
+    dwYCountChars: DWORD;
+    dwFillAttribute: DWORD;
+    dwFlags: DWORD;
+    wShowWindow: Word;
+    cbReserved2: Word;
+    lpReserved2: PByte;
+    hStdInput: THandle;
+    hStdOutput: THandle;
+    hStdError: THandle;
+  end;
+
+  TStartupInfoExW_Custom = record
+    StartupInfo: TStartupInfoW_Explicit;
+    lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST;
+  end;
+
 var
   Size: TCoord;
   InPipeRead, OutPipeWrite: THandle;
   Sec: SECURITY_ATTRIBUTES;
-  Startup: TStartupInfoExW;
+  Startup: TStartupInfoExW_Custom;
   ProcInfo: PROCESS_INFORMATION;
   AttrListSize: SIZE_T;
   AttrList: PPROC_THREAD_ATTRIBUTE_LIST;
@@ -326,8 +367,9 @@ begin
     CloseHandle(InPipeRead); InPipeRead := 0;
     CloseHandle(OutPipeWrite); OutPipeWrite := 0;
 
-    Startup.StartupInfo.cb := SizeOf(TStartupInfoExW);
-    Startup.StartupInfo.dwFlags := 0; 
+    Startup.StartupInfo.cb := SizeOf(TStartupInfoExW_Custom);
+    Startup.StartupInfo.dwFlags := STARTF_USESHOWWINDOW or STARTF_USESTDHANDLES;
+    Startup.StartupInfo.wShowWindow := SW_HIDE;
 
     AttrListSize := 0;
     InitializeProcThreadAttributeList(nil, 1, 0, AttrListSize);
@@ -338,7 +380,7 @@ begin
           Exit(PTY_ERR_CONPTY_CREATE);
 
         if not UpdateProcThreadAttribute(AttrList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                                       @FConPty, SizeOf(HPCON), nil, nil) then // The Fix: @FConPty
+                                       @FConPty, SizeOf(HPCON), nil, nil) then
           Exit(PTY_ERR_CONPTY_CREATE);
 
         Startup.lpAttributeList := AttrList;
@@ -350,9 +392,9 @@ begin
     CmdLineMutable := CmdLine;
     UniqueString(CmdLineMutable);
 
-    if not CreateProcessW(nil, PWideChar(CmdLineMutable), nil, nil, False,
+    if not MyCreateProcessW(nil, PWideChar(CmdLineMutable), nil, nil, False,
                           Flags, EnvBlock, PWideChar(Cwd),
-                          Startup.StartupInfo, ProcInfo) then
+                          @Startup.StartupInfo, ProcInfo) then
     begin
       DoError(GetLastError, 'CreateProcess failed');
       Exit(PTY_ERR_PROC_CREATE);
@@ -396,8 +438,14 @@ begin
       FOnData(FHandleId, @Buffer[0], BytesRead);
   end;
 
-  if (FProcHandle <> 0) and GetExitCodeProcess(FProcHandle, LExitCode) then
-    FExitCode := Integer(LExitCode)
+  if FProcHandle <> 0 then
+  begin
+    WaitForSingleObject(FProcHandle, 5000); // Give it time to die
+    if GetExitCodeProcess(FProcHandle, LExitCode) then
+      FExitCode := Integer(LExitCode)
+    else
+      FExitCode := -1;
+  end
   else
     FExitCode := -1;
 
@@ -445,13 +493,18 @@ end;
 
 function TPtySession.KillHard: Integer;
 begin
+  Result := PTY_OK;
+  
+  if FConPty <> 0 then
+  begin
+    ClosePseudoConsole(FConPty);
+    FConPty := 0;
+  end;
+
   if FProcHandle <> 0 then
   begin
-    if not TerminateProcess(FProcHandle, 1) then Exit(PTY_ERR_INVALID_STATE);
-	Result := PTY_OK;
-  end
-  else
-    Result := PTY_ERR_INVALID_STATE;
+    if not TerminateProcess(FProcHandle, 1) then Result := PTY_ERR_INVALID_STATE;
+  end;
 end;
 
 function TPtySession.IsAlive: Boolean;
