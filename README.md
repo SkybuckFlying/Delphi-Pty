@@ -1,7 +1,3 @@
----
-
-# README.md
-
 # Delphi-PTY Backend
 
 A high-performance Windows ConPTY backend implemented in Delphi, exposed to Node.js through a native N-API addon (C++).
