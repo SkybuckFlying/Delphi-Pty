@@ -1,29 +1,17 @@
-const { createPty } = require("./index");
+const { createPty } = require('./index');
 
 const pty = createPty({
-  command: "cmd.exe",
+  command: 'cmd.exe',
   args: [],
-  cols: 80,
-  rows: 25,
-  onData: (chunk) => {
-    process.stdout.write(chunk);
-  },
-  onExit: (code) => {
-    console.log("\n[PTY exited] code =", code);
-  },
-  onError: (errCode, msg) => {
-    console.error("[PTY error]", errCode, msg);
-  }
+  onData: (chunk) => process.stdout.write(chunk),
+  onExit: (code) => console.log("\n[EXIT]", code),
+  onError: (code, msg) => console.error("[ERR]", code, msg),
 });
 
 setTimeout(() => {
-  pty.write("dir\r\n");
+  pty.write('dir\r\n');
 }, 500);
 
 setTimeout(() => {
-  pty.resize(120, 40);
+  pty.write('exit\r\n');
 }, 2000);
-
-setTimeout(() => {
-  pty.close();
-}, 5000);

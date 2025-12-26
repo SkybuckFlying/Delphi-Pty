@@ -1,10 +1,10 @@
 {
   "name": "delphi-pty-backend",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "main": "index.js",
+  "gypfile": true,
   "dependencies": {
-    "ffi-napi": "^4.0.3",
-    "ref-napi": "^3.0.3",
-    "ref-array-di": "^1.2.2"
+    "node-addon-api": "^8.0.0"
   }
 }
+
