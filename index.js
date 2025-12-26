@@ -31,13 +31,21 @@ function createPty(opts) {
 
   return {
     handle,
-    write:     (data)    => addon.write(handle, String(data)),
-    resize:    (c, r)    => addon.resize(handle, c, r),
-    close:     ()        => addon.close(handle),
-    kill:      ()        => addon.kill(handle),
-    isAlive:   ()        => addon.isAlive(handle),
-    getExitCode: ()      => addon.getExitCode(handle),
+    write:       (data) => addon.write(handle, String(data)),
+    resize:      (c, r) => addon.resize(handle, c, r),
+    close:       ()     => addon.close(handle),
+    kill:        ()     => addon.kill(handle),
+    isAlive:     ()     => addon.isAlive(handle),
+    getExitCode: ()     => addon.getExitCode(handle),
   };
 }
 
-module.exports = { createPty };
+module.exports = {
+  createPty,
+  write: addon.write,
+  resize: addon.resize,
+  close: addon.close,
+  kill: addon.kill,
+  isAlive: addon.isAlive,
+  getExitCode: addon.getExitCode,
+};

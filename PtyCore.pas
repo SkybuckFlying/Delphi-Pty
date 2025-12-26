@@ -58,6 +58,7 @@ uses
 const
   PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = $00020016;
   EXTENDED_STARTUPINFO_PRESENT = $00080000;
+  CREATE_UNICODE_ENVIRONMENT   = $00000400;
 
 type
   HPCON = THandle;
@@ -296,6 +297,7 @@ var
   AttrListSize: SIZE_T;
   AttrList: PPROC_THREAD_ATTRIBUTE_LIST;
   Flags: DWORD;
+  CmdLineMutable: UnicodeString;
 begin
   Result := PTY_OK;
   if not GConPtyAvailable then
@@ -312,7 +314,7 @@ begin
   ZeroMemory(@ProcInfo, SizeOf(ProcInfo));
 
   try
-	if not CreatePipe(FOutPipeRead, OutPipeWrite, @Sec, 0) then Exit(PTY_ERR_PIPE_CREATE);
+    if not CreatePipe(FOutPipeRead, OutPipeWrite, @Sec, 0) then Exit(PTY_ERR_PIPE_CREATE);
     if not CreatePipe(InPipeRead, FInPipeWrite, @Sec, 0) then Exit(PTY_ERR_PIPE_CREATE);
 
     Size.X := Cols;
@@ -325,22 +327,30 @@ begin
     CloseHandle(OutPipeWrite); OutPipeWrite := 0;
 
     Startup.StartupInfo.cb := SizeOf(TStartupInfoExW);
+    Startup.StartupInfo.dwFlags := 0; 
 
     AttrListSize := 0;
     InitializeProcThreadAttributeList(nil, 1, 0, AttrListSize);
-    AttrList := PPROC_THREAD_ATTRIBUTE_LIST(AllocMem(AttrListSize));
+    if AttrListSize > 0 then
+    begin
+        AttrList := PPROC_THREAD_ATTRIBUTE_LIST(AllocMem(AttrListSize));
+        if not InitializeProcThreadAttributeList(AttrList, 1, 0, AttrListSize) then
+          Exit(PTY_ERR_CONPTY_CREATE);
 
-    if not InitializeProcThreadAttributeList(AttrList, 1, 0, AttrListSize) then
-      Exit(PTY_ERR_CONPTY_CREATE);
+        if not UpdateProcThreadAttribute(AttrList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                       @FConPty, SizeOf(HPCON), nil, nil) then // The Fix: @FConPty
+          Exit(PTY_ERR_CONPTY_CREATE);
 
-    if not UpdateProcThreadAttribute(AttrList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                                   Pointer(FConPty), SizeOf(HPCON), nil, nil) then
-      Exit(PTY_ERR_CONPTY_CREATE);
+        Startup.lpAttributeList := AttrList;
+    end;
 
-    Startup.lpAttributeList := AttrList;
-    Flags := EXTENDED_STARTUPINFO_PRESENT;
+    Flags := EXTENDED_STARTUPINFO_PRESENT or CREATE_UNICODE_ENVIRONMENT;
 
-    if not CreateProcessW(nil, PWideChar(CmdLine), nil, nil, False,
+    // Ensure mutable command line
+    CmdLineMutable := CmdLine;
+    UniqueString(CmdLineMutable);
+
+    if not CreateProcessW(nil, PWideChar(CmdLineMutable), nil, nil, False,
                           Flags, EnvBlock, PWideChar(Cwd),
                           Startup.StartupInfo, ProcInfo) then
     begin

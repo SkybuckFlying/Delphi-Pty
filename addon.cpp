@@ -4,6 +4,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 using namespace Napi;
 
@@ -151,7 +152,10 @@ void __stdcall ExitCallback(PTY_HANDLE handle, int exitCode) {
 void __stdcall ErrorCallback(PTY_HANDLE handle, int errCode, const char* msg) {
   std::lock_guard<std::mutex> lock(g_cbMutex);
   auto it = g_callbacks.find(handle);
-  if (it == g_callbacks.end()) return;
+  if (it == g_callbacks.end()) {
+    if (msg) fprintf(stderr, "[Native Error] Handle %d: %s (Code: %d)\n", handle, msg, errCode);
+    return;
+  }
 
   auto tsfn = it->second.onError;
   if (!tsfn) return;
@@ -209,7 +213,9 @@ Value CreatePty(const CallbackInfo& info) {
       std::string v = envObj.Get(k).ToString().Utf8Value();
       envPairs.push_back(k + "=" + v);
     }
+    std::sort(envPairs.begin(), envPairs.end());
     envC = BuildCStringArray(envPairs);
+    envC.push_back(nullptr); // Null-terminate for Delphi
   }
 
   auto tsOnData = ThreadSafeFunction::New(env, onData, "onData", 0, 1);
