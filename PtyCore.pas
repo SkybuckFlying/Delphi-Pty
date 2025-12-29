@@ -276,7 +276,6 @@ const
 var
   Buffer: array[0..BUF_SIZE - 1] of AnsiChar;
   BytesRead: DWORD;
-  TotalBytesAvail: DWORD;
   LExitCode: DWORD;
 begin
   while not Terminated do
@@ -384,7 +383,6 @@ function TPtySession.Start(
   Rows: Integer
 ): Integer;
 var
-  Size: TWinCoord;
   InPipeRead, OutPipeWrite: THandle;
   Sec: SECURITY_ATTRIBUTES;
   Startup: TStartupInfoExW_Custom;
@@ -399,7 +397,6 @@ begin
   if not GConPtyAvailable then
     Exit(PTY_ERR_CONPTY_UNSUPPORTED);
 
-  Writeln('Starting PTY session for: ', CmdLine);
 
   ZeroMemory(@Sec, SizeOf(Sec));
   Sec.nLength := SizeOf(Sec);
@@ -493,7 +490,6 @@ begin
   if not IsAlive then Exit(PTY_ERR_INVALID_STATE);
   if not WriteFile(FInPipeWrite, Data, Len, Written, nil) then
   begin
-    Writeln('WriteFile failed: ', GetLastError);
     Result := PTY_ERR_WRITE_FAILED;
   end
   else

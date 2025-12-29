@@ -5,7 +5,8 @@ program TestDll;
 uses
   Winapi.Windows,
   System.SysUtils,
-  System.Classes;
+  System.Classes,
+  System.DateUtils;
 
 type
   PTY_HANDLE = Integer;
@@ -42,7 +43,7 @@ var
   S: string;
 begin
   SetString(S, data, len);
-  Writeln('[PTY OUTPUT]: ', S);
+  Write(S);
 end;
 
 procedure OnExit(handle: PTY_HANDLE; exitCode: Integer); stdcall;
@@ -61,17 +62,31 @@ procedure RunTest;
 var
   Handle: PTY_HANDLE;
   Cmd: AnsiString;
+  hOut: THandle;
+  csbi: TConsoleScreenBufferInfo;
+  Cols, Rows: Integer;
 begin
-  Writeln('Testing Pty_Init...');
   if Pty_Init <> 0 then
   begin
     Writeln('Pty_Init failed. ConPTY likely unsupported.');
     Exit;
   end;
 
-  Writeln('Creating PTY (cmd /c echo Hello)...');
-  Cmd := 'cmd /c echo Hello from ConPTY!';
-  Handle := Pty_Create(PAnsiChar(Cmd), nil, 0, nil, nil, 80, 25, @OnData, @OnExit, @OnError);
+  // Query current host console size
+  hOut := GetStdHandle(STD_OUTPUT_HANDLE);
+  if not GetConsoleScreenBufferInfo(hOut, csbi) then
+  begin
+    Cols := 80;
+    Rows := 25;
+  end
+  else
+  begin
+    Cols := csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    Rows := csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+  end;
+
+  Writeln(Format('Creating PTY to match host size: %dx%d...', [Cols, Rows]));
+  Handle := Pty_Create('cmd.exe', nil, 0, nil, nil, Cols, Rows, @OnData, @OnExit, @OnError);
   
   if Handle <= 0 then
   begin
@@ -81,31 +96,44 @@ begin
 
   Writeln('PTY Created. Handle: ', Handle);
   
-  Sleep(500);
-  Writeln('Sending "dir"...');
-  Cmd := 'dir'#13#10;
+  Writeln(#10'Wait 2s for prompt...');
+  Sleep(2000);
+
+  Writeln(#10'Checking console mode (should match host size)...');
+  Cmd := 'mode con'#13#10;
   Pty_Write(Handle, PAnsiChar(Cmd), Length(Cmd));
+  Sleep(2000);
 
-  Sleep(1000);
-  Writeln('Resizing to 100x30...');
-  Pty_Resize(Handle, 100, 30);
-
-  Sleep(500);
-  Writeln('Sending "exit"...');
+  Writeln(#10'Closing gracefully (sending exit)...');
   Cmd := 'exit'#13#10;
   Pty_Write(Handle, PAnsiChar(Cmd), Length(Cmd));
-
+  
   // Wait for finish or timeout
   Writeln('Waiting for exit...');
+  var StartTime: TDateTime;
+  StartTime := Now;
   while not GFinished do
   begin
     Sleep(100);
+    if SecondSpan(Now, StartTime) > 5 then
+    begin
+      Writeln('Timeout, killing (this causes negative STATUS_CONTROL_C_EXIT)...');
+      Pty_Kill(Handle);
+      Break;
+    end;
   end;
 
   Writeln('Test finished. Exit Code: ', GExitCode);
 end;
 
+var
+  hOut: THandle;
+  dwMode: DWORD;
 begin
+  hOut := GetStdHandle(STD_OUTPUT_HANDLE);
+  if GetConsoleMode(hOut, dwMode) then
+    SetConsoleMode(hOut, dwMode or $0004); // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+
   try
     RunTest;
   except
