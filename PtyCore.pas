@@ -10,11 +10,19 @@ uses
   System.SyncObjs;
 
 type
-  PTY_HANDLE = Integer;
+  { FIX: Scalable handle for 32/64-bit compatibility }
+  PTY_HANDLE = NativeInt;
 
+  { FIX: Win64 calling convention adjustment }
+  {$IFDEF WIN64}
+  TPtyDataCallback  = procedure(handle: PTY_HANDLE; data: PAnsiChar; len: Integer);
+  TPtyExitCallback  = procedure(handle: PTY_HANDLE; exitCode: Integer);
+  TPtyErrorCallback = procedure(handle: PTY_HANDLE; errorCode: Integer; msg: PAnsiChar);
+  {$ELSE}
   TPtyDataCallback  = procedure(handle: PTY_HANDLE; data: PAnsiChar; len: Integer); stdcall;
   TPtyExitCallback  = procedure(handle: PTY_HANDLE; exitCode: Integer); stdcall;
   TPtyErrorCallback = procedure(handle: PTY_HANDLE; errorCode: Integer; msg: PAnsiChar); stdcall;
+  {$ENDIF}
 
 const
   PTY_OK                      = 0;
@@ -75,6 +83,7 @@ type
     property OnError: TPtyErrorCallback read FOnError write FOnError;
   end;
 
+{ API Exports }
 function Pty_Init: Integer; stdcall;
 function Pty_Create(command: PAnsiChar; args: PPAnsiChar; argCount: Integer; cwd: PAnsiChar; env: PPAnsiChar; cols, rows: Integer; onData: TPtyDataCallback; onExit: TPtyExitCallback; onError: TPtyErrorCallback; out outPid: Integer): PTY_HANDLE; stdcall;
 function Pty_Write(handle: PTY_HANDLE; data: PAnsiChar; len: Integer): Integer; stdcall;
@@ -91,8 +100,10 @@ uses
 
 const
   PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = $00020016;
-  EXTENDED_STARTUPINFO_PRESENT = $00080000;
-  CREATE_UNICODE_ENVIRONMENT   = $00000400;
+  EXTENDED_STARTUPINFO_PRESENT        = $00080000;
+  CREATE_UNICODE_ENVIRONMENT           = $00000400;
+  { FIX: Flag to prevent extra cmd.exe window }
+  CREATE_NO_WINDOW                    = $08000000;
 
 type
   PPROC_THREAD_ATTRIBUTE_LIST = Pointer;
@@ -116,6 +127,7 @@ var
   GPtySessions: TObjectDictionary<PTY_HANDLE, TPtySession>;
   GConPtyAvailable: Boolean = False;
 
+{ Helper: Convert Utf8 PAnsiChar to UnicodeString }
 function SafeUtf8ToUnicode(const AAnsiPtr: PAnsiChar): UnicodeString;
 var
   LStr: RawByteString;
@@ -129,6 +141,7 @@ begin
   Result := UnicodeString(LStr);
 end;
 
+{ Helper: Escape shell arguments }
 function EscapeArg(const S: string): string;
 var
   i: Integer;
@@ -152,6 +165,7 @@ begin
   Result := Result + '"';
 end;
 
+{ Helper: Build environment block for CreateProcess }
 function BuildEnvBlock(env: PPAnsiChar): PWideChar;
 var
   P: PAnsiCharArray;
@@ -342,8 +356,9 @@ begin
       InitializeProcThreadAttributeList(StartupEx.lpAttributeList, 1, 0, AttrListSize);
       UpdateProcThreadAttribute(StartupEx.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, @FConPty, SizeOf(THandle), nil, nil);
 
+      { FIX: Added CREATE_NO_WINDOW to suppress the external console window }
       if not CreateProcessW(nil, PWideChar(MutableCmdLine), nil, nil, False,
-                EXTENDED_STARTUPINFO_PRESENT or CREATE_UNICODE_ENVIRONMENT,
+                EXTENDED_STARTUPINFO_PRESENT or CREATE_UNICODE_ENVIRONMENT or CREATE_NO_WINDOW,
                 EnvBlock, pWorkDir, StartupEx.StartupInfo, ProcInfo) then
       begin
         DoError(GetLastError, 'CreateProcessW failed. Cmd: ' + CmdLine);
@@ -407,7 +422,7 @@ begin
       FInPipeWrite := 0;
     end;
     if WaitForSingleObject(FProcHandle, 1500) = WAIT_TIMEOUT then
-       TerminateProcess(FProcHandle, 1);
+        TerminateProcess(FProcHandle, 1);
   end;
   Result := PTY_OK;
 end;
