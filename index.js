@@ -25,7 +25,8 @@ function createPty(opts) {
     throw new Error("createPty: command is required");
   }
 
-  const handle = addon.createPtyNative({
+  // --- FIX: Destructure handle and pid from the returned object ---
+  const { handle, pid } = addon.createPtyNative({
     command,
     args,
     cwd,
@@ -39,6 +40,7 @@ function createPty(opts) {
 
   return {
     handle,
+    pid, // You now have access to the Process ID!
     write:       (data) => addon.write(handle, toBuffer(data)),
     resize:      (c, r) => addon.resize(handle, c, r),
     close:       ()     => addon.close(handle),
@@ -50,6 +52,7 @@ function createPty(opts) {
 
 module.exports = {
   createPty,
+  // Note: These direct exports require the user to pass the handle manually
   write: (handle, data) => addon.write(handle, toBuffer(data)),
   resize: addon.resize,
   close: addon.close,
