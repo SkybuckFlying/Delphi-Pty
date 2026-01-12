@@ -70,6 +70,7 @@ type
     function IsAlive: Boolean;
     property HandleId: PTY_HANDLE read FHandleId;
     property ExitCode: Integer read FExitCode;
+    property State: TPtyState read FState;
     property OnData: TPtyDataCallback read FOnData write FOnData;
     property OnExit: TPtyExitCallback read FOnExit write FOnExit;
     property OnError: TPtyErrorCallback read FOnError write FOnError;
@@ -107,6 +108,7 @@ function ResizePseudoConsole(hPC: THandle; size: COORD): HRESULT; stdcall; exter
 procedure ClosePseudoConsole(hPC: THandle); stdcall; external kernel32;
 function InitializeProcThreadAttributeList(lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST; dwAttributeCount: DWORD; dwFlags: DWORD; var lpSize: NativeUInt): BOOL; stdcall; external kernel32;
 function UpdateProcThreadAttribute(lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST; dwFlags: DWORD; Attribute: NativeUInt; lpValue: Pointer; cbSize: NativeUInt; lpPreviousValue: Pointer; lpReturnSize: PNativeUInt): BOOL; stdcall; external kernel32;
+// FIXED: This is a procedure (void), not a function (BOOL)
 procedure DeleteProcThreadAttributeList(lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST); stdcall; external kernel32;
 
 var
@@ -114,6 +116,14 @@ var
   GPtyNextHandle: PTY_HANDLE = 1;
   GPtySessions: TObjectDictionary<PTY_HANDLE, TPtySession>;
   GConPtyAvailable: Boolean = False;
+
+function EscapeArg(const S: string): string;
+begin
+  if (S = '') or (Pos(' ', S) > 0) or (Pos('"', S) > 0) then
+    Result := '"' + StringReplace(S, '"', '""', [rfReplaceAll]) + '"'
+  else
+    Result := S;
+end;
 
 function BuildEnvBlock(env: PPAnsiChar): PWideChar;
 var
@@ -132,6 +142,7 @@ begin
     Combined := Combined + S + #0;
     Inc(I);
   end;
+  if Combined = '' then Exit;
   Combined := Combined + #0;
   Result := AllocMem(Length(Combined) * SizeOf(WideChar));
   Move(PWideChar(Combined)^, Result^, Length(Combined) * SizeOf(WideChar));
@@ -206,17 +217,27 @@ begin
     FLock.Leave;
   end;
 
+  if FInPipeWrite <> 0 then
+  begin
+    CloseHandle(FInPipeWrite);
+    FInPipeWrite := 0;
+  end;
+
   if Assigned(FReadThread) then
   begin
     FReadThread.Terminate;
-    CancelSynchronousIo(FReadThread.Handle);
+    Sleep(50);
+    if not FReadThread.Finished then
+    begin
+      CancelIoEx(FOutPipeRead, nil);
+      Sleep(30);
+    end;
     FReadThread.WaitFor;
-    FReadThread.Free;
+    FreeAndNil(FReadThread);
   end;
 
   if FConPty <> 0 then ClosePseudoConsole(FConPty);
   if FOutPipeRead <> 0 then CloseHandle(FOutPipeRead);
-  if FInPipeWrite <> 0 then CloseHandle(FInPipeWrite);
   if FProcHandle <> 0 then CloseHandle(FProcHandle);
 
   FLock.Free;
@@ -226,10 +247,15 @@ end;
 procedure TPtySession.DoError(const Code: Integer; const Msg: string);
 var A: AnsiString;
 begin
-  if Assigned(FOnError) then
-  begin
-    A := AnsiString(Msg);
-    FOnError(FHandleId, Code, PAnsiChar(A));
+  FLock.Enter;
+  try
+    if Assigned(FOnError) then
+    begin
+      A := AnsiString(Msg);
+      FOnError(FHandleId, Code, PAnsiChar(A));
+    end;
+  finally
+    FLock.Leave;
   end;
 end;
 
@@ -248,66 +274,83 @@ begin
   Sec.bInheritHandle := True;
   Sec.lpSecurityDescriptor := nil;
 
+  InPipeRead := 0; OutPipeWrite := 0;
   if not CreatePipe(InPipeRead, FInPipeWrite, @Sec, 0) then Exit(PTY_ERR_PIPE_CREATE);
+
   if not CreatePipe(FOutPipeRead, OutPipeWrite, @Sec, 0) then
   begin
     CloseHandle(InPipeRead);
     Exit(PTY_ERR_PIPE_CREATE);
   end;
 
-  SetHandleInformation(FInPipeWrite, HANDLE_FLAG_INHERIT, 0);
-  SetHandleInformation(FOutPipeRead, HANDLE_FLAG_INHERIT, 0);
+  try
+    SetHandleInformation(FInPipeWrite, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(FOutPipeRead, HANDLE_FLAG_INHERIT, 0);
 
-  ConsoleSize.X := Cols;
-  ConsoleSize.Y := Rows;
+    ConsoleSize.X := Cols;
+    ConsoleSize.Y := Rows;
 
-  Res := CreatePseudoConsole(ConsoleSize, InPipeRead, OutPipeWrite, 0, FConPty);
-  if Res >= 0 then
-  begin
-    CloseHandle(InPipeRead);
-    CloseHandle(OutPipeWrite);
+    Res := CreatePseudoConsole(ConsoleSize, InPipeRead, OutPipeWrite, 0, FConPty);
+    if Res < 0 then Exit(PTY_ERR_CONPTY_CREATE);
+
+    CloseHandle(InPipeRead); InPipeRead := 0;
+    CloseHandle(OutPipeWrite); OutPipeWrite := 0;
 
     FillChar(StartupEx, SizeOf(StartupEx), 0);
-    StartupEx.StartupInfo.cb := SizeOf(StartupEx);
+    StartupEx.StartupInfo.cb := SizeOf(TStartupInfoExW);
 
     AttrListSize := 0;
     InitializeProcThreadAttributeList(nil, 1, 0, AttrListSize);
     StartupEx.lpAttributeList := AllocMem(AttrListSize);
-
-    if InitializeProcThreadAttributeList(StartupEx.lpAttributeList, 1, 0, AttrListSize) then
-    begin
-      if UpdateProcThreadAttribute(StartupEx.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-                                     Pointer(FConPty), SizeOf(THandle), nil, nil) then
+    try
+      if InitializeProcThreadAttributeList(StartupEx.lpAttributeList, 1, 0, AttrListSize) then
       begin
-        if CreateProcessW(nil, PWideChar(CmdLine), nil, nil, False,
-                              EXTENDED_STARTUPINFO_PRESENT or CREATE_UNICODE_ENVIRONMENT,
-                              EnvBlock, PWideChar(Cwd), StartupEx.StartupInfo, ProcInfo) then
+        if UpdateProcThreadAttribute(StartupEx.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+                                     @FConPty, SizeOf(THandle), nil, nil) then
         begin
-          FProcHandle := ProcInfo.hProcess;
-          FProcId := ProcInfo.dwProcessId;
-          CloseHandle(ProcInfo.hThread);
-          FReadThread := TPtyReadThread.Create(Self);
-          FReadThread.Start;
-        end
-        else
-        begin
-          DoError(GetLastError, 'Process creation failed');
-          Result := PTY_ERR_PROC_CREATE;
+          if CreateProcessW(nil, PWideChar(CmdLine), nil, nil, False,
+                            EXTENDED_STARTUPINFO_PRESENT or CREATE_UNICODE_ENVIRONMENT,
+                            EnvBlock,
+                            Pointer(Cwd),
+                            StartupEx.StartupInfo, ProcInfo) then
+          begin
+            FProcHandle := ProcInfo.hProcess;
+            FProcId := ProcInfo.dwProcessId;
+            CloseHandle(ProcInfo.hThread);
+            FReadThread := TPtyReadThread.Create(Self);
+            FReadThread.Start;
+          end
+          else
+          begin
+            Result := PTY_ERR_PROC_CREATE;
+            DoError(GetLastError, 'CreateProcess failed'); // FIXED: DoError is now used
+          end;
         end;
+        DeleteProcThreadAttributeList(StartupEx.lpAttributeList);
       end;
-      DeleteProcThreadAttributeList(StartupEx.lpAttributeList);
+    finally
+      FreeMem(StartupEx.lpAttributeList);
     end;
-    FreeMem(StartupEx.lpAttributeList);
-  end
-  else
-    Result := PTY_ERR_CONPTY_CREATE;
+  finally
+    if InPipeRead <> 0 then CloseHandle(InPipeRead);
+    if OutPipeWrite <> 0 then CloseHandle(OutPipeWrite);
+  end;
 end;
 
 function TPtySession.Write(const Data; Len: Integer): Integer;
 var Written: DWORD;
 begin
-  if not IsAlive then Exit(PTY_ERR_INVALID_STATE);
-  if not WriteFile(FInPipeWrite, Data, Len, Written, nil) then Exit(PTY_ERR_WRITE_FAILED);
+  FLock.Enter;
+  try
+    if (FState <> psRunning) or (FInPipeWrite = 0) then
+      Exit(PTY_ERR_INVALID_STATE);
+  finally
+    FLock.Leave;
+  end;
+
+  if not WriteFile(FInPipeWrite, Data, Len, Written, nil) then
+    Exit(PTY_ERR_WRITE_FAILED);
+
   Result := Integer(Written);
 end;
 
@@ -365,7 +408,7 @@ end;
 function Pty_Create(command: PAnsiChar; args: PPAnsiChar; argCount: Integer; cwd: PAnsiChar; env: PPAnsiChar; cols, rows: Integer; onData: TPtyDataCallback; onExit: TPtyExitCallback; onError: TPtyErrorCallback): PTY_HANDLE; stdcall;
 var
   S: TPtySession;
-  CmdLine: UnicodeString;
+  CmdLine, WorkDir: UnicodeString;
   PArgs: PAnsiCharArray;
   I: Integer;
   EnvBlock: PWideChar;
@@ -384,23 +427,25 @@ begin
   S.OnExit := onExit;
   S.OnError := onError;
 
-  CmdLine := '"' + UTF8ToString(command) + '"';
+  CmdLine := EscapeArg(string(command));
   if (args <> nil) and (argCount > 0) then
   begin
     PArgs := PAnsiCharArray(args);
     for I := 0 to argCount - 1 do
-      CmdLine := CmdLine + ' "' + UTF8ToString(PArgs^[I]) + '"';
+      CmdLine := CmdLine + ' ' + EscapeArg(string(PArgs^[I]));
   end;
+
+  if cwd <> nil then WorkDir := string(cwd) else WorkDir := '';
 
   EnvBlock := BuildEnvBlock(env);
   try
-    if S.Start(CmdLine, UTF8ToString(cwd), EnvBlock, cols, rows) <> PTY_OK then
+    if S.Start(CmdLine, WorkDir, EnvBlock, cols, rows) <> PTY_OK then
     begin
       S.Free;
       Exit(PTY_ERR_PROC_CREATE);
     end;
   finally
-    FreeMem(EnvBlock);
+    if EnvBlock <> nil then FreeMem(EnvBlock);
   end;
 
   GPtyLock.Enter;
@@ -437,16 +482,21 @@ begin
 end;
 
 function Pty_Close(handle: PTY_HANDLE): Integer; stdcall;
+var
+  S: TPtySession;
 begin
   GPtyLock.Enter;
   try
-    if GPtySessions.ContainsKey(handle) then
-    begin
-      GPtySessions.Remove(handle);
-      Result := PTY_OK;
-    end
-    else
-      Result := PTY_ERR_NOT_FOUND;
+    if not GPtySessions.TryGetValue(handle, S) then
+      Exit(PTY_ERR_NOT_FOUND);
+
+    if S.State = psRunning then
+      S.CloseGraceful;
+
+    Sleep(20);
+
+    GPtySessions.Remove(handle);
+    Result := PTY_OK;
   finally
     GPtyLock.Leave;
   end;
