@@ -2,10 +2,18 @@
   "name": "delphi-pty-backend",
   "version": "0.2.0",
   "main": "index.js",
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "build": "node-gyp rebuild",
+    "test": "node index.js"
+  },
   "dependencies": {
-    "node-addon-api": "^8.0.0"
+    "node-addon-api": "^8.3.0"
   },
   "devDependencies": {
-    "node-gyp": "^12.1.0"
+    "node-gyp": "^11.0.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

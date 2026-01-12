@@ -1,13 +1,21 @@
 const addon = require('./build/Release/delphi_pty.node');
 
+/**
+ * Ensures data is in a Buffer format for the native addon.
+ */
+function toBuffer(data) {
+  if (Buffer.isBuffer(data) || data instanceof Uint8Array) return data;
+  return Buffer.from(String(data));
+}
+
 function createPty(opts) {
   const {
     command,
     args = [],
     cwd = process.cwd(),
     env = process.env,
-    cols = 80,
-    rows = 25,
+    cols = process.stdout.columns || 80,
+    rows = process.stdout.rows || 25,
     onData,
     onExit,
     onError,
@@ -31,7 +39,7 @@ function createPty(opts) {
 
   return {
     handle,
-    write:       (data) => addon.write(handle, String(data)),
+    write:       (data) => addon.write(handle, toBuffer(data)),
     resize:      (c, r) => addon.resize(handle, c, r),
     close:       ()     => addon.close(handle),
     kill:        ()     => addon.kill(handle),
@@ -42,7 +50,7 @@ function createPty(opts) {
 
 module.exports = {
   createPty,
-  write: addon.write,
+  write: (handle, data) => addon.write(handle, toBuffer(data)),
   resize: addon.resize,
   close: addon.close,
   kill: addon.kill,
